@@ -71,8 +71,16 @@ class TellTimeAgent:
     )
 
     def __init__(self):
-        # Initialize the Gemini LLM model (fast variant)
-        self.model = ChatGoogleGenerativeAI(model="gemini-2.0-flash")
+        # Initialize the Gemini LLM model (fast variant) with API key from environment
+        import os
+        api_key = os.getenv('GOOGLE_API_KEY')
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY environment variable is required")
+        
+        self.model = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash",
+            google_api_key=api_key
+        )
 
         # Register the available tools for this agent
         self.tools = [get_time_now]

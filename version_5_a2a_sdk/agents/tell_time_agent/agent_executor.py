@@ -59,17 +59,17 @@ class TellTimeAgentExecutor(AgentExecutor):  # Define a new executor by extendin
 
         if not task:                     # If no existing task, this is a new interaction
             task = new_task(context.message)       # Create a new task based on the message
-            event_queue.enqueue_event(task)        # Enqueue the new task to notify the A2A server
+            await event_queue.enqueue_event(task)  # Enqueue the new task to notify the A2A server
 
         # Use the agent to handle the query via async stream
-        async for event in self.agent.stream(query, task.contextId):
+        async for event in self.agent.stream(query, task.context_id):
 
             if event['is_task_complete']:  # If the task has been successfully completed
                 # Send the result artifact to the A2A server
-                event_queue.enqueue_event(
+                await event_queue.enqueue_event(
                     TaskArtifactUpdateEvent(
                         taskId=task.id,                 # ID of the task
-                        contextId=task.contextId,       # ID of the context (conversation thread)
+                        contextId=task.context_id,      # ID of the context (conversation thread)
                         artifact=new_text_artifact(     # The result artifact
                             name='current_result',      # Name of the artifact
                             description='Result of request to agent.',  # Description
@@ -80,10 +80,10 @@ class TellTimeAgentExecutor(AgentExecutor):  # Define a new executor by extendin
                     )
                 )
                 # Send final status update: task is completed
-                event_queue.enqueue_event(
+                await event_queue.enqueue_event(
                     TaskStatusUpdateEvent(
                         taskId=task.id,                 # ID of the task
-                        contextId=task.contextId,       # Context ID
+                        contextId=task.context_id,      # Context ID
                         status=TaskStatus(state=TaskState.completed),  # Mark task as completed
                         final=True,                     # This is the last status update
                     )
@@ -91,15 +91,15 @@ class TellTimeAgentExecutor(AgentExecutor):  # Define a new executor by extendin
 
             elif event['require_user_input']:  # If the agent needs more information from user
                 # Enqueue an input_required status with a message
-                event_queue.enqueue_event(
+                await event_queue.enqueue_event(
                     TaskStatusUpdateEvent(
                         taskId=task.id,                 # ID of the task
-                        contextId=task.contextId,       # Context ID
+                        contextId=task.context_id,      # Context ID
                         status=TaskStatus(
                             state=TaskState.input_required,  # Set state as input_required
                             message=new_agent_text_message(  # Provide a message asking for input
                                 event['content'],             # Message content
-                                task.contextId,               # Context ID
+                                task.context_id,              # Context ID
                                 task.id                       # Task ID
                             ),
                         ),
@@ -109,15 +109,15 @@ class TellTimeAgentExecutor(AgentExecutor):  # Define a new executor by extendin
 
             else:  # The task is still being processed (working)
                 # Enqueue a status update showing ongoing work
-                event_queue.enqueue_event(
+                await event_queue.enqueue_event(
                     TaskStatusUpdateEvent(
                         taskId=task.id,                 # Task ID
-                        contextId=task.contextId,       # Context ID
+                        contextId=task.context_id,      # Context ID
                         status=TaskStatus(
                             state=TaskState.working,    # Mark as still working
                             message=new_agent_text_message(
                                 event['content'],       # Current progress or log
-                                task.contextId,         # Context ID
+                                task.context_id,        # Context ID
                                 task.id                  # Task ID
                             ),
                         ),

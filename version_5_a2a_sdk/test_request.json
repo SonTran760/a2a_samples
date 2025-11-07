@@ -1,0 +1,12 @@
+{
+    "jsonrpc": "2.0",
+    "id": "test123",
+    "method": "message/send",
+    "params": {
+        "message": {
+            "role": "user",
+            "parts": [{"kind": "text", "text": "What time is it?"}],
+            "messageId": "msg123"
+        }
+    }
+}

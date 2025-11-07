@@ -25,33 +25,28 @@ from rich import print as rprint    # Enhanced print function to support colors 
 from rich.syntax import Syntax      # Used to highlight JSON output in the terminal
 
 # Import the official A2A SDK client and related types
-from a2a.client import A2AClient
+from a2a.client import ClientFactory, Client
 from a2a.types import (
     AgentCard,                      # Metadata about the agent
-    SendMessageRequest,             # For sending regular (non-streaming) messages
-    SendStreamingMessageRequest,    # For sending streaming messages
-    MessageSendParams,              # Structure to hold message content
-    SendMessageSuccessResponse,     # Represents a successful response from the agent
+    Message,                        # Message type for sending
+    Part,                           # Message parts
+    Role,                           # Message roles
     Task,                           # Task object representing the agent's work unit
     TaskState,                      # Enum describing current task state (working, complete, etc.)
-    GetTaskRequest,                 # Used to request status of a task
-    TaskQueryParams,                # Parameters needed to fetch a specific task
 )
 
 # -----------------------------------------------------------------------------
-# Helper: Create a message payload in expected A2A format
+# Helper: Create a message in expected A2A format
 # -----------------------------------------------------------------------------
-def build_message_payload(text: str, task_id: str | None = None, context_id: str | None = None) -> dict[str, Any]:
-    # Constructs a dictionary payload that matches A2A message format
-    return {
-        "message": {
-            "role": "user",  # The role of the message sender
-            "parts": [{"kind": "text", "text": text}],  # The actual message content
-            "messageId": uuid4().hex,  # Unique message ID for tracking
-            **({"taskId": task_id} if task_id else {}),  # Include taskId only if it's a follow-up
-            **({"contextId": context_id} if context_id else {}),  # Include contextId for continuity
-        }
-    }
+def build_message(text: str, task_id: str | None = None, context_id: str | None = None) -> Message:
+    # Constructs a Message object that matches A2A message format
+    return Message(
+        role=Role.user,  # The role of the message sender
+        parts=[Part(kind="text", text=text)],  # The actual message content
+        messageId=uuid4().hex,  # Unique message ID for tracking
+        taskId=task_id if task_id else None,  # Include taskId only if it's a follow-up
+        contextId=context_id if context_id else None,  # Include contextId for continuity
+    )
 
 # -----------------------------------------------------------------------------
 # Helper: Pretty print JSON objects using syntax coloring
@@ -60,10 +55,14 @@ def print_json_response(response: Any, title: str) -> None:
     # Displays a formatted and color-highlighted view of the response
     print(f"\n=== {title} ===")  # Section title for clarity
     try:
+        # Handle different response types
         if hasattr(response, "root"):  # Check if response is wrapped by SDK
             data = response.root.model_dump(mode="json", exclude_none=True)
-        else:
+        elif hasattr(response, "model_dump"):  # Check if it's a Pydantic model
             data = response.model_dump(mode="json", exclude_none=True)
+        else:
+            # Already a regular dictionary or other JSON-serializable object
+            data = response
 
         json_str = json.dumps(data, indent=2, ensure_ascii=False)  # Convert dict to pretty JSON string
         syntax = Syntax(json_str, "json", theme="monokai", line_numbers=False)  # Apply syntax highlighting
@@ -74,70 +73,54 @@ def print_json_response(response: Any, title: str) -> None:
         rprint(repr(response))
 
 # -----------------------------------------------------------------------------
-# Handles sending one non-streaming message and optionally a follow-up
+# Handle sending a message and processing the response (unified streaming/non-streaming)
 # -----------------------------------------------------------------------------
-async def handle_non_streaming(client: A2AClient, text: str):
-    # Build and send the first message
-    request = SendMessageRequest(params=MessageSendParams(**build_message_payload(text)))
-    result = await client.send_message(request)  # Wait for agent reply
-    print_json_response(result, "Agent Reply")  # Print the reply
-
-    # If agent needs more input, prompt user again
-    if isinstance(result.root, SendMessageSuccessResponse):
-        task = result.root.result  # Extract task
-        if task.status.state == TaskState.input_required:
-            follow_up = input("\U0001F7E1 Agent needs more input. Your reply: ")
-            follow_up_req = SendMessageRequest(
-                params=MessageSendParams(**build_message_payload(follow_up, task.id, task.contextId))
-            )
-            follow_up_resp = await client.send_message(follow_up_req)
-            print_json_response(follow_up_resp, "Follow-up Response")
-
-# -----------------------------------------------------------------------------
-# Handles streaming message and recursively continues if more input is needed
-# -----------------------------------------------------------------------------
-async def handle_streaming(client: A2AClient, text: str, task_id: str | None = None, context_id: str | None = None):
-    # Construct streaming request payload
-    request = SendStreamingMessageRequest(params=MessageSendParams(**build_message_payload(text, task_id, context_id)))
-
-    # Track latest task/context ID to support multi-turn
-    latest_task_id = None
-    latest_context_id = None
-    input_required = False
-
-    # Process each streamed update
-    async for update in client.send_message_streaming(request):
-        print_json_response(update, "Streaming Update")  # Print each update as it comes
-
-        # Extract context/task from current update
-        if hasattr(update.root, "result"):
-            result = update.root.result
-            if hasattr(result, "contextId"):
-                latest_context_id = result.contextId
-            if hasattr(result, "status") and result.status.state == TaskState.input_required:
-                latest_task_id = result.taskId
-                input_required = True
-
-    # If input was required, get response from user and continue conversation
-    if input_required and latest_task_id and latest_context_id:
-        follow_up = input("\U0001F7E1 Agent needs more input. Your reply: ")
-        await handle_streaming(client, follow_up, latest_task_id, latest_context_id)
+async def handle_message(client: Client, text: str, task_id: str | None = None, context_id: str | None = None):
+    # Build and send the message
+    message = build_message(text, task_id, context_id)
+    
+    # Send message and process responses
+    try:
+        response_count = 0
+        async for item in client.send_message(message):
+            response_count += 1
+            if isinstance(item, tuple):
+                # This is a (Task, Update) tuple for streaming updates
+                task, update = item
+                # Convert Pydantic models to dictionaries for JSON serialization
+                task_dict = task.model_dump(mode="json", exclude_none=True) if hasattr(task, "model_dump") else task
+                update_dict = update.model_dump(mode="json", exclude_none=True) if hasattr(update, "model_dump") else update
+                print_json_response({"task": task_dict, "update": update_dict}, "Streaming Update")
+                
+                # Check if input is required
+                if task.status.state == TaskState.input_required:
+                    follow_up = input("\U0001F7E1 Agent needs more input. Your reply: ")
+                    await handle_message(client, follow_up, task.id, task.context_id)
+            else:
+                # This is a Message response for non-streaming
+                print_json_response(item, "Agent Reply")
+        
+        if response_count == 0:
+            print("⚠️  No response received from agent")
+            
+    except RuntimeError as e:
+        if "StopAsyncIteration" in str(e):
+            print("⚠️  Agent connection ended unexpectedly. Please check if the agent is running correctly.")
+        else:
+            raise e
 
 # -----------------------------------------------------------------------------
 # Loop for querying the agent repeatedly
 # -----------------------------------------------------------------------------
-async def interactive_loop(client: A2AClient, supports_streaming: bool):
+async def interactive_loop(client: Client, supports_streaming: bool):
     print("\nEnter your query below. Type 'exit' to quit.")  # Print instructions for user
     while True:
         query = input("\n\U0001F7E2 Your query: ").strip()  # Get user input
         if query.lower() in {"exit", "quit"}:
             print("\U0001F44B Exiting...")  # Say goodbye
             break
-        # Choose path based on agent's capability
-        if supports_streaming:
-            await handle_streaming(client, query)
-        else:
-            await handle_non_streaming(client, query)
+        
+        await handle_message(client, query)
 
 # -----------------------------------------------------------------------------
 # Command-line entry point
@@ -153,16 +136,11 @@ def main(agent_url: str):
 async def run_main(agent_url: str):
     print(f"Connecting to agent at {agent_url}...")  # Let user know we're starting connection
     try:
-        async with httpx.AsyncClient() as session:  # Use async context to keep session open
-            client = await A2AClient.get_client_from_agent_card_url(session, agent_url)  # Create A2A client
-            client.httpx_client.timeout = 60  # Increase timeout for long operations
-
-            res = await session.get(f"{agent_url}/.well-known/agent.json")  # Get agent metadata
-            agent_card = AgentCard.model_validate(res.json())  # Validate the structure of the metadata
-            supports_streaming = agent_card.capabilities.streaming  # Check if agent can stream
-
-            rprint(f"[green bold]✅ Connected. Streaming supported:[/green bold] {supports_streaming}")  # Confirm success
-            await interactive_loop(client, supports_streaming)  # Start conversation loop
+        # Use ClientFactory to connect to the agent
+        client = await ClientFactory.connect(agent_url)  # Create A2A client
+        
+        rprint(f"[green bold]✅ Connected to {agent_url}")  # Confirm success
+        await interactive_loop(client, True)  # Start conversation loop (streaming support is auto-detected)
 
     except Exception:
         traceback.print_exc()  # Show full error trace

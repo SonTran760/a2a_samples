@@ -14,7 +14,6 @@ import os                      # Provides access to environment variables
 import sys                     # Used for exiting if setup is incomplete
 
 import click                   # Helps define command-line interface for running the server
-import httpx                   # HTTP client used for async push notifications
 from dotenv import load_dotenv  # Loads .env file for environment variables
 
 # Import the agent logic and its executor
@@ -24,7 +23,7 @@ from .agent_executor import TellTimeAgentExecutor  # Bridges the agent with A2A 
 # Import A2A SDK components to create a working agent server
 from a2a.server.apps import A2AStarletteApplication  # Main application class based on Starlette
 from a2a.server.request_handlers import DefaultRequestHandler  # Default logic for handling tasks
-from a2a.server.tasks import InMemoryPushNotifier, InMemoryTaskStore  # In-memory task manager and notifier
+from a2a.server.tasks import InMemoryTaskStore  # In-memory task manager
 from a2a.types import AgentCard, AgentSkill, AgentCapabilities  # Agent metadata definitions
 
 # -----------------------------------------------------------------------------
@@ -44,14 +43,10 @@ def main(host: str, port: int):
         print("GOOGLE_API_KEY environment variable not set.")
         sys.exit(1)  # Exit the program if API key is missing
 
-    # Create HTTP client (used for push notifications)
-    client = httpx.AsyncClient()
-
     # Set up the request handler for processing incoming tasks
     handler = DefaultRequestHandler(
         agent_executor=TellTimeAgentExecutor(),  # Hook in our custom agent
         task_store=InMemoryTaskStore(),          # Use in-memory store to manage task state
-        push_notifier=InMemoryPushNotifier(client),  # Enable server push updates (e.g., via webhook)
     )
 
     # Set up the A2A server application using agent card and handler
@@ -73,7 +68,7 @@ def build_agent_card(host: str, port: int) -> AgentCard:
         description="Tells the current system time.",               # Short description
         url=f"http://{host}:{port}/",                               # Full URL where the agent is reachable
         version="1.0.0",                                            # Version of the agent
-        capabilities=AgentCapabilities(streaming=True, pushNotifications=True),  # Supported features
+        capabilities=AgentCapabilities(streaming=True, pushNotifications=False),  # Supported features
         defaultInputModes=TellTimeAgent.SUPPORTED_CONTENT_TYPES,    # Accepted input content types
         defaultOutputModes=TellTimeAgent.SUPPORTED_CONTENT_TYPES,   # Returned output content types
         skills=[                                                     # Skills this agent supports (currently one)
